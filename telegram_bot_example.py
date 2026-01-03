@@ -11,7 +11,12 @@ Setup:
    WEBHOOK_PATH=/webhook  # Required: the endpoint path
    HOST=0.0.0.0
    PORT=8000
-   WEBHOOK_URL=https://your-domain.com/webhook  # Update with your actual domain
+   
+   # Option 1: Set WEBHOOK_URL directly
+   WEBHOOK_URL=https://your-domain.com/webhook
+   
+   # Option 2: Set DOMAIN and it will be constructed automatically
+   DOMAIN=your-domain.com
    
    Note: WEBHOOK_SECRET is optional but recommended. Generate with: openssl rand -hex 32
 
@@ -50,7 +55,18 @@ WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET', 'your-secret-token-here')
 WEBHOOK_PATH = os.getenv('WEBHOOK_PATH', '/webhook')
 HOST = os.getenv('HOST', '0.0.0.0')
 PORT = int(os.getenv('PORT', '8000'))
-WEBHOOK_URL = os.getenv('WEBHOOK_URL', f'https://your-domain.com{WEBHOOK_PATH}')
+
+# Construct WEBHOOK_URL from env variables if not directly set
+WEBHOOK_URL = os.getenv('WEBHOOK_URL')
+if not WEBHOOK_URL:
+    DOMAIN = os.getenv('DOMAIN')
+    if DOMAIN:
+        # Remove trailing slash from domain if present
+        DOMAIN = DOMAIN.rstrip('/')
+        WEBHOOK_URL = f'https://{DOMAIN}{WEBHOOK_PATH}'
+    else:
+        # Fallback to placeholder if neither WEBHOOK_URL nor DOMAIN is set
+        WEBHOOK_URL = f'https://your-domain.com{WEBHOOK_PATH}'
 
 if not BOT_TOKEN:
     raise ValueError(
@@ -67,20 +83,20 @@ async def lifespan(app: FastAPI):
     # Startup
     await application.initialize()
     await application.start()
-    await application.updater.start_webhook(
-        listen=HOST,
-        port=PORT,
-        url_path=WEBHOOK_PATH,
-        webhook_url=WEBHOOK_URL,
-        secret_token=WEBHOOK_SECRET,
+    
+    # Set webhook URL with Telegram (don't start a server - uvicorn handles that)
+    # This just tells Telegram where to send updates
+    await application.bot.set_webhook(
+        url=WEBHOOK_URL,
+        secret_token=WEBHOOK_SECRET if WEBHOOK_SECRET and WEBHOOK_SECRET != 'your-secret-token-here' else None,
     )
-    print(f"🤖 Bot webhook started on {HOST}:{PORT}{WEBHOOK_PATH}")
-    print(f"📡 Webhook URL: {WEBHOOK_URL}")
+    print(f"📡 Webhook URL registered with Telegram: {WEBHOOK_URL}")
+    print(f"🤖 Bot ready! FastAPI will handle webhook requests at {WEBHOOK_PATH}")
     
     yield
     
     # Shutdown
-    await application.updater.stop()
+    await application.bot.delete_webhook()  # Optional: remove webhook on shutdown
     await application.stop()
     await application.shutdown()
 

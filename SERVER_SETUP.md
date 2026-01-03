@@ -274,9 +274,17 @@ WEBHOOK_SECRET=your-random-secret-token-here
 WEBHOOK_PATH=/webhook
 HOST=0.0.0.0
 PORT=8000
+
+# Option 1: Set WEBHOOK_URL directly
+WEBHOOK_URL=https://your-domain.com/webhook
+
+# Option 2: Set DOMAIN and it will be constructed automatically
+DOMAIN=your-domain.com
 ```
 
 **Explanation of webhook settings:**
+- **WEBHOOK_URL** (recommended): The full webhook URL that Telegram will send updates to (e.g., `https://your-domain.com/webhook`). If not set, it will be constructed from `DOMAIN` + `WEBHOOK_PATH`.
+- **DOMAIN** (alternative to WEBHOOK_URL): Your domain name (e.g., `telegram.klipr.app`). Used to construct `WEBHOOK_URL` if `WEBHOOK_URL` is not set directly.
 - **WEBHOOK_PATH** (required): The URL path where Telegram will send updates (e.g., `/webhook`). This must match the endpoint in your FastAPI app. You can use any path, but `/webhook` is standard.
 - **WEBHOOK_SECRET** (optional but recommended): A secret token for security. Telegram will include this in the `X-Telegram-Bot-Api-Secret-Token` header. This helps verify requests are from Telegram, not attackers. **You generate this yourself** (see below).
 - **HOST** and **PORT**: Where uvicorn will listen. `0.0.0.0` means listen on all interfaces.
