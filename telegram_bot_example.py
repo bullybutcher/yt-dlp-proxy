@@ -3,15 +3,40 @@ Example Telegram bot integration using yt-dlp-proxy.
 
 This example shows how to download YouTube videos and send them directly to Telegram
 without storing them permanently on disk.
+
+Setup:
+1. Set BOT_TOKEN environment variable:
+   export BOT_TOKEN="your_bot_token_here"
+   
+   Or create a .env file:
+   BOT_TOKEN=your_bot_token_here
+
+2. Install python-telegram-bot:
+   pip install python-telegram-bot
 """
 
 from main import download_to_telegram
+import os
 import asyncio
 from telegram import Bot
 from telegram.error import TelegramError
 
-# Replace with your bot token
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+# Try to load from .env file (optional - requires python-dotenv)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed, skip .env loading
+
+# Get bot token from environment variable
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+
+if not BOT_TOKEN:
+    raise ValueError(
+        "BOT_TOKEN environment variable is not set. "
+        "Please set it using: export BOT_TOKEN='your_token_here' "
+        "or create a .env file with BOT_TOKEN=your_token_here"
+    )
 
 
 async def handle_youtube_download(update, context):
@@ -172,6 +197,7 @@ async def handle_audio_download(update, context):
 from telegram.ext import Application, MessageHandler, filters
 
 def main():
+    # BOT_TOKEN is loaded from environment variable (see top of file)
     application = Application.builder().token(BOT_TOKEN).build()
     
     # Handle YouTube URLs
