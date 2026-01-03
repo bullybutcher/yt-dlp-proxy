@@ -1,25 +1,37 @@
 """
-Example Telegram bot integration using yt-dlp-proxy.
+Example Telegram bot integration using yt-dlp-proxy with FastAPI and uvicorn.
 
 This example shows how to download YouTube videos and send them directly to Telegram
-without storing them permanently on disk.
+without storing them permanently on disk, using webhooks instead of polling.
 
 Setup:
-1. Set BOT_TOKEN environment variable:
-   export BOT_TOKEN="your_bot_token_here"
-   
-   Or create a .env file:
+1. Set environment variables in .env file:
    BOT_TOKEN=your_bot_token_here
+   WEBHOOK_SECRET=your-random-secret-token-here  # Optional but recommended for security
+   WEBHOOK_PATH=/webhook  # Required: the endpoint path
+   HOST=0.0.0.0
+   PORT=8000
+   WEBHOOK_URL=https://your-domain.com/webhook  # Update with your actual domain
+   
+   Note: WEBHOOK_SECRET is optional but recommended. Generate with: openssl rand -hex 32
 
-2. Install python-telegram-bot:
-   pip install python-telegram-bot
+2. Install dependencies:
+   pip install python-telegram-bot fastapi uvicorn python-dotenv
+
+3. Run with uvicorn:
+   uvicorn telegram_bot_example:app --host 0.0.0.0 --port 8000
+   
+   Or with custom host/port:
+   uvicorn telegram_bot_example:app --host 127.0.0.1 --port 8080
 """
 
 from main import download_to_telegram
 import os
-import asyncio
-from telegram import Bot
-from telegram.error import TelegramError
+from telegram import Update
+from telegram.ext import Application, MessageHandler, filters
+from fastapi import FastAPI, Request
+from fastapi.responses import Response
+import uvicorn
 
 # Try to load from .env file (optional - requires python-dotenv)
 try:
@@ -28,18 +40,28 @@ try:
 except ImportError:
     pass  # python-dotenv not installed, skip .env loading
 
-# Get bot token from environment variable
+# Get configuration from environment variables
 BOT_TOKEN = os.getenv('BOT_TOKEN')
+WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET', 'your-secret-token-here')
+WEBHOOK_PATH = os.getenv('WEBHOOK_PATH', '/webhook')
+HOST = os.getenv('HOST', '0.0.0.0')
+PORT = int(os.getenv('PORT', '8000'))
+WEBHOOK_URL = os.getenv('WEBHOOK_URL', f'https://your-domain.com{WEBHOOK_PATH}')
 
 if not BOT_TOKEN:
     raise ValueError(
         "BOT_TOKEN environment variable is not set. "
-        "Please set it using: export BOT_TOKEN='your_token_here' "
-        "or create a .env file with BOT_TOKEN=your_token_here"
+        "Please set it in .env file or export BOT_TOKEN='your_token_here'"
     )
 
+# Create FastAPI app
+app = FastAPI()
 
-async def handle_youtube_download(update, context):
+# Create Telegram application
+application = Application.builder().token(BOT_TOKEN).build()
+
+
+async def handle_youtube_download(update: Update, context):
     """Handle YouTube URL from user and send video to Telegram."""
     url = update.message.text
     
@@ -82,7 +104,6 @@ async def handle_youtube_download(update, context):
         )
         
         # Check file size (Telegram has a 50MB limit for bots)
-        import os
         file_size = os.path.getsize(file_path) / (1024 * 1024)  # Size in MB
         
         if file_size > 50:
@@ -125,7 +146,7 @@ async def handle_youtube_download(update, context):
             result['cleanup']()
 
 
-async def handle_audio_download(update, context):
+async def handle_audio_download(update: Update, context):
     """Download audio only and send as audio file."""
     url = update.message.text
     
@@ -192,25 +213,68 @@ async def handle_audio_download(update, context):
             result['cleanup']()
 
 
-# Example usage with python-telegram-bot library
-"""
-from telegram.ext import Application, MessageHandler, filters
-
-def main():
-    # BOT_TOKEN is loaded from environment variable (see top of file)
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    # Handle YouTube URLs
-    application.add_handler(
-        MessageHandler(
-            filters.Regex(r'(youtube\.com|youtu\.be)'),
-            handle_youtube_download
-        )
+# Register handlers
+application.add_handler(
+    MessageHandler(
+        filters.Regex(r'(youtube\.com|youtu\.be)'),
+        handle_youtube_download
     )
+)
+
+# Optional: Add audio download handler (uncomment if needed)
+# application.add_handler(
+#     MessageHandler(
+#         filters.Regex(r'(youtube\.com|youtu\.be).*audio'),
+#         handle_audio_download
+#     )
+# )
+
+@app.post(WEBHOOK_PATH)
+async def webhook(request: Request):
+    """Handle incoming webhook requests from Telegram."""
+    # Validate secret token if configured (security check)
+    if WEBHOOK_SECRET and WEBHOOK_SECRET != 'your-secret-token-here':
+        secret_header = request.headers.get('X-Telegram-Bot-Api-Secret-Token')
+        if secret_header != WEBHOOK_SECRET:
+            return Response(status_code=403)  # Forbidden if secret doesn't match
     
-    application.run_polling()
+    data = await request.json()
+    update = Update.de_json(data, application.bot)
+    await application.process_update(update)
+    return Response()
+
+@app.on_event("startup")
+async def startup():
+    """Initialize bot on startup."""
+    await application.initialize()
+    await application.start()
+    await application.updater.start_webhook(
+        listen=HOST,
+        port=PORT,
+        url_path=WEBHOOK_PATH,
+        webhook_url=WEBHOOK_URL,
+        secret_token=WEBHOOK_SECRET,
+    )
+    print(f"🤖 Bot webhook started on {HOST}:{PORT}{WEBHOOK_PATH}")
+    print(f"📡 Webhook URL: {WEBHOOK_URL}")
+
+@app.on_event("shutdown")
+async def shutdown():
+    """Cleanup on shutdown."""
+    await application.updater.stop()
+    await application.stop()
+    await application.shutdown()
+
+@app.get("/")
+async def root():
+    """Health check endpoint."""
+    return {"status": "ok", "bot": "running"}
+
+@app.get("/health")
+async def health():
+    """Health check endpoint."""
+    return {"status": "healthy"}
 
 if __name__ == '__main__':
-    main()
-"""
+    uvicorn.run(app, host=HOST, port=PORT)
 
