@@ -8,6 +8,7 @@ import json
 import importlib
 import inspect
 import tempfile
+import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from proxy_provider import ProxyProvider
 from proxy_providers import *
@@ -174,7 +175,6 @@ def check_ffmpeg_available():
     Returns:
         True if ffmpeg is available, False otherwise
     """
-    import shutil
     return shutil.which('ffmpeg') is not None
 
 
@@ -211,6 +211,16 @@ def download_with_proxy(urls, yt_dlp_options=None, proxy=None, proxy_file="proxy
     # Add ffmpeg location if specified
     if ffmpeg_location and 'ffmpeg_location' not in yt_dlp_options:
         yt_dlp_options['ffmpeg_location'] = ffmpeg_location
+    
+    # Configure JavaScript runtime (deno) if not already set
+    if 'js_runtime' not in yt_dlp_options:
+        # Try to find deno in PATH
+        deno_path = shutil.which('deno')
+        if deno_path:
+            yt_dlp_options['js_runtime'] = f'deno:{deno_path}'
+        else:
+            # Fallback: just use 'deno' and let yt-dlp find it
+            yt_dlp_options['js_runtime'] = 'deno'
     
     retries = 0
     used_proxies = set()
@@ -332,6 +342,16 @@ def download_to_telegram(urls, yt_dlp_options=None, proxy=None, proxy_file="prox
     # Add ffmpeg location if specified
     if ffmpeg_location and 'ffmpeg_location' not in opts:
         opts['ffmpeg_location'] = ffmpeg_location
+    
+    # Configure JavaScript runtime (deno) if not already set
+    if 'js_runtime' not in opts:
+        # Try to find deno in PATH
+        deno_path = shutil.which('deno')
+        if deno_path:
+            opts['js_runtime'] = f'deno:{deno_path}'
+        else:
+            # Fallback: just use 'deno' and let yt-dlp find it
+            opts['js_runtime'] = 'deno'
     
     # Store info for return
     info_dict = {}
