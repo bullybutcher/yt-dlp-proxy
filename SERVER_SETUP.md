@@ -57,14 +57,8 @@ source venv/bin/activate
 # Upgrade pip
 pip install --upgrade pip
 
-# Install project dependencies
+# Install project dependencies (includes python-telegram-bot[webhooks], fastapi, uvicorn)
 pip install -r requirements.txt
-
-# Install python-telegram-bot (required for Telegram bot)
-pip install python-telegram-bot
-
-# Install FastAPI and uvicorn (for webhook server)
-pip install fastapi uvicorn
 ```
 
 ### 5. Set Up Environment Variables
@@ -353,22 +347,37 @@ curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
 
 ### 9. Test the Bot Locally
 
+Since `bot.py` (or `telegram_bot_example.py`) includes `uvicorn.run()` in the `if __name__ == '__main__'` block, you have two options:
+
+**Option 1: Run directly with Python (simplest)**
 ```bash
 # Make sure virtual environment is activated
 source venv/bin/activate
 
-# Run the bot with uvicorn (specify host and port)
+# Run the bot (uses HOST and PORT from .env file)
+python3 bot.py
+# or
+python3 telegram_bot_example.py
+```
+
+This will use the `HOST` and `PORT` values from your `.env` file.
+
+**Option 2: Use uvicorn CLI (more control)**
+```bash
+# Make sure virtual environment is activated
+source venv/bin/activate
+
+# Run with uvicorn CLI (overrides .env settings)
 uvicorn bot:app --host 0.0.0.0 --port 8000
 
-# Or use the default settings from .env
-python3 bot.py
-```
-
-**Or run with custom host/port directly:**
-
-```bash
+# Or with custom host/port
 uvicorn bot:app --host 127.0.0.1 --port 8080
+
+# With auto-reload for development
+uvicorn bot:app --host 0.0.0.0 --port 8000 --reload
 ```
+
+**Note:** Using the uvicorn CLI gives you more options (like `--reload` for auto-restart on code changes), but if your script already has `uvicorn.run()`, you can just use `python3 bot.py` - it's simpler and works fine.
 
 Test by sending a YouTube URL to your bot on Telegram.
 
@@ -392,10 +401,13 @@ Type=simple
 User=your_username
 WorkingDirectory=/path/to/yt-dlp-proxy
 Environment="PATH=/path/to/yt-dlp-proxy/venv/bin"
-# Using uvicorn with custom host and port
-ExecStart=/path/to/yt-dlp-proxy/venv/bin/uvicorn bot:app --host 0.0.0.0 --port 8000
-# Or use environment variables from .env
-# ExecStart=/path/to/yt-dlp-proxy/venv/bin/python3 /path/to/yt-dlp-proxy/bot.py
+
+# Option 1: Run with Python (uses HOST and PORT from .env file) - Recommended
+ExecStart=/path/to/yt-dlp-proxy/venv/bin/python3 /path/to/yt-dlp-proxy/bot.py
+
+# Option 2: Run with uvicorn CLI (overrides .env settings, more control)
+# ExecStart=/path/to/yt-dlp-proxy/venv/bin/uvicorn bot:app --host 0.0.0.0 --port 8000
+
 Restart=always
 RestartSec=10
 
@@ -485,7 +497,7 @@ git checkout telegram  # if branch exists
 sudo apt update && sudo apt install -y python3 python3-pip python3-venv ffmpeg
 python3 -m venv venv && source venv/bin/activate
 pip install --upgrade pip
-pip install -r requirements.txt python-telegram-bot fastapi uvicorn
+pip install -r requirements.txt
 
 # Generate webhook secret
 WEBHOOK_SECRET=$(openssl rand -hex 32)
@@ -502,12 +514,12 @@ EOF
 
 python3 main.py update
 
-# Run bot with uvicorn
+# Run bot (simplest - uses settings from .env)
 source venv/bin/activate
-uvicorn bot:app --host 0.0.0.0 --port 8000
+python3 bot.py
 
-# Or with custom host/port
-uvicorn bot:app --host 127.0.0.1 --port 8080
+# Or run with uvicorn CLI (for more control)
+uvicorn bot:app --host 0.0.0.0 --port 8000
 
 # Generate webhook secret (if needed later)
 openssl rand -hex 32

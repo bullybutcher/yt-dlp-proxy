@@ -6,3 +6,6 @@ tqdm==4.67.1
 urllib3==2.2.3
 yt-dlp
 python-dotenv
+python-telegram-bot[webhooks]
+fastapi
+uvicorn

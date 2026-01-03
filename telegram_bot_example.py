@@ -16,7 +16,10 @@ Setup:
    Note: WEBHOOK_SECRET is optional but recommended. Generate with: openssl rand -hex 32
 
 2. Install dependencies:
-   pip install python-telegram-bot fastapi uvicorn python-dotenv
+   pip install -r requirements.txt
+   
+   Or manually:
+   pip install python-telegram-bot[webhooks] fastapi uvicorn python-dotenv
 
 3. Run with uvicorn:
    uvicorn telegram_bot_example:app --host 0.0.0.0 --port 8000
@@ -27,6 +30,7 @@ Setup:
 
 from main import download_to_telegram
 import os
+from contextlib import asynccontextmanager
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters
 from fastapi import FastAPI, Request
@@ -54,11 +58,34 @@ if not BOT_TOKEN:
         "Please set it in .env file or export BOT_TOKEN='your_token_here'"
     )
 
-# Create FastAPI app
-app = FastAPI()
-
 # Create Telegram application
 application = Application.builder().token(BOT_TOKEN).build()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup and shutdown events."""
+    # Startup
+    await application.initialize()
+    await application.start()
+    await application.updater.start_webhook(
+        listen=HOST,
+        port=PORT,
+        url_path=WEBHOOK_PATH,
+        webhook_url=WEBHOOK_URL,
+        secret_token=WEBHOOK_SECRET,
+    )
+    print(f"🤖 Bot webhook started on {HOST}:{PORT}{WEBHOOK_PATH}")
+    print(f"📡 Webhook URL: {WEBHOOK_URL}")
+    
+    yield
+    
+    # Shutdown
+    await application.updater.stop()
+    await application.stop()
+    await application.shutdown()
+
+# Create FastAPI app with lifespan
+app = FastAPI(lifespan=lifespan)
 
 
 async def handle_youtube_download(update: Update, context):
@@ -242,28 +269,6 @@ async def webhook(request: Request):
     update = Update.de_json(data, application.bot)
     await application.process_update(update)
     return Response()
-
-@app.on_event("startup")
-async def startup():
-    """Initialize bot on startup."""
-    await application.initialize()
-    await application.start()
-    await application.updater.start_webhook(
-        listen=HOST,
-        port=PORT,
-        url_path=WEBHOOK_PATH,
-        webhook_url=WEBHOOK_URL,
-        secret_token=WEBHOOK_SECRET,
-    )
-    print(f"🤖 Bot webhook started on {HOST}:{PORT}{WEBHOOK_PATH}")
-    print(f"📡 Webhook URL: {WEBHOOK_URL}")
-
-@app.on_event("shutdown")
-async def shutdown():
-    """Cleanup on shutdown."""
-    await application.updater.stop()
-    await application.stop()
-    await application.shutdown()
 
 @app.get("/")
 async def root():
