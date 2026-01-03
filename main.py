@@ -7,6 +7,7 @@ import sys
 import json
 import importlib
 import inspect
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from proxy_provider import ProxyProvider
 from proxy_providers import *
@@ -267,6 +268,197 @@ def download_with_proxy(urls, yt_dlp_options=None, proxy=None, proxy_file="proxy
             raise
     
     return False
+
+
+def download_to_telegram(urls, yt_dlp_options=None, proxy=None, proxy_file="proxy.json", max_retries=10, verbose=True, ffmpeg_location=None):
+    """Download using yt-dlp with a proxy and return file path for Telegram upload.
+    
+    This function is designed for Telegram bots - it downloads to a temporary file
+    and returns the file path and metadata. The file can be sent to Telegram and
+    optionally cleaned up afterward.
+    
+    Note: yt-dlp uses ffmpeg as an external binary (not a Python package). 
+    ffmpeg must be installed separately on your system.
+    
+    Args:
+        urls: URL or list of URLs to download (only first URL is used)
+        yt_dlp_options: Dictionary of yt-dlp options. Defaults to best quality video+audio merged.
+        proxy: Proxy dictionary to use. If None, a random proxy will be selected from proxy_file
+        proxy_file: Name of the proxy file to load proxies from
+        max_retries: Maximum number of retries with different proxies on error
+        verbose: Whether to print status messages
+        ffmpeg_location: Path to ffmpeg executable (optional)
+        cleanup: (Deprecated) This parameter is ignored. Always call cleanup() manually after sending to Telegram.
+        
+    Returns:
+        Dictionary with keys:
+            - 'success': bool - Whether download was successful
+            - 'file_path': str - Path to downloaded file (None if failed)
+            - 'title': str - Video title (None if failed)
+            - 'ext': str - File extension (None if failed)
+            - 'duration': int - Video duration in seconds (None if failed)
+            - 'cleanup': callable - Function to delete the file manually if cleanup=False
+        
+    Raises:
+        FileNotFoundError: If proxy_file doesn't exist and proxy is None
+        yt_dlp.utils.DownloadError: For download errors that aren't retryable
+    """
+    if isinstance(urls, str):
+        urls = [urls]
+    
+    # Use first URL only
+    url = urls[0] if urls else None
+    if not url:
+        return {'success': False, 'file_path': None, 'title': None, 'ext': None, 'duration': None, 'cleanup': None}
+    
+    # Default options optimized for Telegram (best quality, merged, mp4)
+    if yt_dlp_options is None:
+        yt_dlp_options = {
+            'format': 'bestvideo+bestaudio/best',
+            'merge_output_format': 'mp4',
+            'quiet': not verbose,
+            'no_warnings': not verbose,
+        }
+    
+    # Create temporary directory for download
+    temp_dir = tempfile.mkdtemp(prefix='yt_dlp_telegram_')
+    # Use a simple filename template in the temp directory
+    temp_file_template = os.path.join(temp_dir, 'video.%(ext)s')
+    
+    # Add output template to options
+    opts = yt_dlp_options.copy()
+    opts['outtmpl'] = temp_file_template
+    
+    # Add ffmpeg location if specified
+    if ffmpeg_location and 'ffmpeg_location' not in opts:
+        opts['ffmpeg_location'] = ffmpeg_location
+    
+    # Store info for return
+    info_dict = {}
+    
+    def progress_hook(d):
+        """Hook to capture video info during download."""
+        if d['status'] == 'finished':
+            info_dict.update(d.get('info_dict', {}))
+    
+    opts['progress_hooks'] = [progress_hook]
+    
+    retries = 0
+    used_proxies = set()
+    downloaded_file_path = None
+    
+    while retries < max_retries:
+        try:
+            # Get proxy
+            if proxy is None:
+                proxies = load_proxies(proxy_file)
+                available_proxies = [
+                    p for p in proxies 
+                    if f"{p.get('host')}:{p.get('port')}" not in used_proxies
+                ]
+                if not available_proxies:
+                    available_proxies = proxies
+                    used_proxies.clear()
+                proxy = random.choice(available_proxies)
+                used_proxies.add(f"{proxy.get('host')}:{proxy.get('port')}")
+            
+            proxy_str = construct_proxy_string(proxy)
+            if verbose:
+                city = proxy.get('city', 'Unknown')
+                country = proxy.get('country', 'Unknown')
+                print(f"Using proxy from {city}, {country}")
+            
+            # Add proxy to options
+            opts['proxy'] = f'http://{proxy_str}'
+            
+            # Create YoutubeDL instance and download
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                # Extract info first to get title
+                info = ydl.extract_info(url, download=False)
+                info_dict.update(info)
+                
+                # Download the video
+                ydl.download([url])
+            
+            # Find the downloaded file - yt-dlp may have added extension
+            downloaded_file_path = None
+            for file in os.listdir(temp_dir):
+                file_path = os.path.join(temp_dir, file)
+                if os.path.isfile(file_path) and not file.endswith('.part'):
+                    downloaded_file_path = file_path
+                    break
+            
+            if not downloaded_file_path or not os.path.exists(downloaded_file_path):
+                # Try to find any file in the directory
+                files = [f for f in os.listdir(temp_dir) if os.path.isfile(os.path.join(temp_dir, f))]
+                if files:
+                    downloaded_file_path = os.path.join(temp_dir, files[0])
+                else:
+                    raise Exception("Downloaded file not found")
+            
+            # Get file info
+            title = info_dict.get('title', 'Unknown')
+            ext = info_dict.get('ext', os.path.splitext(downloaded_file_path)[1].lstrip('.'))
+            duration = info_dict.get('duration')
+            
+            # Create cleanup function
+            def cleanup_file():
+                """Delete the temporary file and directory."""
+                try:
+                    if downloaded_file_path and os.path.exists(downloaded_file_path):
+                        os.remove(downloaded_file_path)
+                    if os.path.exists(temp_dir):
+                        os.rmdir(temp_dir)
+                except Exception as e:
+                    if verbose:
+                        print(f"Warning: Could not cleanup temp file: {e}")
+            
+            result = {
+                'success': True,
+                'file_path': downloaded_file_path,
+                'title': title,
+                'ext': ext,
+                'duration': duration,
+                'cleanup': cleanup_file  # Call this after sending to Telegram
+            }
+            
+            return result
+            
+        except FileNotFoundError:
+            if verbose:
+                print(f"'{proxy_file}' not found. Starting proxy list update...")
+            update_proxies(filename=proxy_file, verbose=verbose)
+            proxy = None
+            retries += 1
+            
+        except (yt_dlp.utils.DownloadError, Exception) as e:
+            error_msg = str(e)
+            if "Sign in to" in error_msg or "403" in error_msg:
+                if verbose:
+                    print("Got 'Sign in to confirm' or '403' error. Trying again with another proxy...")
+                proxy = None
+                retries += 1
+                continue
+            # Cleanup on error
+            try:
+                if downloaded_file_path and os.path.exists(downloaded_file_path):
+                    os.remove(downloaded_file_path)
+                if os.path.exists(temp_dir):
+                    os.rmdir(temp_dir)
+            except:
+                pass
+            raise
+    
+    # Cleanup on failure
+    try:
+        if downloaded_file_path and os.path.exists(downloaded_file_path):
+            os.remove(downloaded_file_path)
+        if os.path.exists(temp_dir):
+            os.rmdir(temp_dir)
+    except:
+        pass
+    
+    return {'success': False, 'file_path': None, 'title': None, 'ext': None, 'duration': None, 'cleanup': None}
 
 
 def run_yt_dlp():

@@ -136,28 +136,68 @@ Load proxies from a JSON file.
 
 ### Example: Telegram Bot Integration
 
-```python
-from main import download_with_proxy
+For Telegram bots, use `download_to_telegram()` which downloads to a temporary file and returns the file path for uploading:
 
-def handle_download_command(url, chat_id):
-    """Handle download command in Telegram bot."""
-    try:
-        success = download_with_proxy(
-            urls=url,
-            yt_dlp_options={
-                'format': 'bestvideo+bestaudio/best',
-                'merge_output_format': 'mp4',
-                'outtmpl': f'downloads/{chat_id}/%(title)s.%(ext)s',
-            },
-            verbose=False  # Set to False to reduce logs in production
+```python
+from main import download_to_telegram
+
+async def handle_youtube_download(update, context):
+    """Download YouTube video and send to Telegram."""
+    url = update.message.text
+    
+    # Download to temporary file
+    result = download_to_telegram(
+        urls=url,
+        yt_dlp_options={
+            'format': 'bestvideo+bestaudio/best',
+            'merge_output_format': 'mp4',
+            'quiet': True,
+        },
+        verbose=False,
+    )
+    
+    if result['success']:
+        # Send video to Telegram
+        with open(result['file_path'], 'rb') as video_file:
+            await context.bot.send_video(
+                chat_id=update.effective_chat.id,
+                video=video_file,
+                caption=f"🎬 {result['title']}",
+            )
+        
+        # Clean up temporary file after sending
+        result['cleanup']()
+    else:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="❌ Download failed"
         )
-        return success
-    except Exception as e:
-        print(f"Error: {e}")
-        return False
 ```
 
-See `example_usage.py` for more examples.
+#### `download_to_telegram(urls, yt_dlp_options=None, proxy=None, proxy_file="proxy.json", max_retries=10, verbose=True, ffmpeg_location=None)`
+
+Download to a temporary file for Telegram upload (no permanent storage).
+
+**Parameters:**
+- `urls`: URL string or list of URLs to download (only first URL is used)
+- `yt_dlp_options`: Dictionary of yt-dlp options. Defaults to best quality video+audio merged to mp4.
+- `proxy`: Proxy dictionary to use. If `None`, a random proxy will be selected
+- `proxy_file`: Name of the proxy file (default: `"proxy.json"`)
+- `max_retries`: Maximum number of retries with different proxies (default: `10`)
+- `verbose`: Whether to print status messages (default: `True`)
+- `ffmpeg_location`: Path to ffmpeg executable (optional)
+
+**Returns:** Dictionary with:
+- `success`: bool - Whether download was successful
+- `file_path`: str - Path to downloaded temporary file (call `cleanup()` after sending!)
+- `title`: str - Video title
+- `ext`: str - File extension
+- `duration`: int - Video duration in seconds
+- `cleanup`: callable - Function to delete the temporary file (call this after sending to Telegram!)
+
+**Important:** Always call `result['cleanup']()` after sending the file to Telegram to free up disk space.
+
+See `telegram_bot_example.py` for a complete Telegram bot example.
 
 
 ### Creating custom proxy providers
