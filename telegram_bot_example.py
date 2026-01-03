@@ -124,7 +124,6 @@ async def handle_youtube_download(update: Update, context):
                 'quiet': True,  # Suppress yt-dlp output
             },
             verbose=False,  # Set to True for debugging
-            cleanup=False,  # Don't auto-cleanup - we'll do it after sending
         )
         
         if not result['success']:
@@ -211,7 +210,6 @@ async def handle_audio_download(update: Update, context):
                 'quiet': True,
             },
             verbose=False,
-            cleanup=False,
         )
         
         if not result['success']:

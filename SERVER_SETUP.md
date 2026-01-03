@@ -346,9 +346,8 @@ openssl rand -hex 32
 
 # Set webhook using curl (replace with your actual values)
 # Use the same secret_token you put in your .env file
-curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://your-domain.com/webhook", "secret_token": "your-generated-secret-here"}'
+
+
 ```
 
 **Note:** The `secret_token` in the curl command must match the `WEBHOOK_SECRET` value in your `.env` file. If you don't want to use a secret token, you can omit the `secret_token` field from the curl command and leave `WEBHOOK_SECRET` empty in your `.env` file.
@@ -387,7 +386,47 @@ uvicorn bot:app --host 0.0.0.0 --port 8000 --reload
 
 **Note:** Using the uvicorn CLI gives you more options (like `--reload` for auto-restart on code changes), but if your script already has `uvicorn.run()`, you can just use `python3 bot.py` - it's simpler and works fine.
 
-Test by sending a YouTube URL to your bot on Telegram.
+### 10. Verify Webhook is Set and Test the Bot
+
+**Step 1: Verify webhook is registered with Telegram**
+```bash
+# Check webhook info (replace with your bot token)
+curl "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getWebhookInfo"
+```
+
+You should see something like:
+```json
+{
+  "ok": true,
+  "result": {
+    "url": "https://telegram.klipr.app/webhook",
+    "has_custom_certificate": false,
+    "pending_update_count": 0
+  }
+}
+```
+
+**Step 2: Test the bot**
+1. Open Telegram and find your bot (search for `@YourBotName`)
+2. Start a conversation with the bot (click "Start" if it's the first time)
+3. Send a YouTube URL, for example:
+   ```
+   https://www.youtube.com/watch?v=dQw4w9WgXcQ
+   ```
+4. The bot should respond with "📥 Downloading video... Please wait." and then send you the video
+
+**Step 3: Check logs**
+Watch your server logs to see if requests are coming through:
+- If using systemd: `sudo journalctl -u yt-dlp-bot -f`
+- If running directly: Check the terminal where you ran `python3 bot.py`
+
+**Troubleshooting:**
+- If the bot doesn't respond, check that:
+  - The webhook URL is correct (matches your domain)
+  - Your server is running and accessible
+  - Caddy is properly forwarding requests
+  - The bot token is correct
+  - Check server logs for errors
 
 ### 10. Set Up as a System Service (Optional - for Production)
 
