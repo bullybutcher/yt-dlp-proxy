@@ -4,7 +4,6 @@ import os
 import io
 import time
 import sys
-import subprocess
 import json
 import importlib
 import inspect
@@ -12,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from proxy_provider import ProxyProvider
 from proxy_providers import *
 from tqdm import tqdm
+import yt_dlp
 
 SPEEDTEST_URL = "http://212.183.159.230/5MB.zip"
 
@@ -136,7 +136,6 @@ def run_yt_dlp():
                 print(f"Using proxy from {proxy['city']}, {proxy['country']}")
 
                 if execute_yt_dlp_command(proxy_str):
-                    os.remove("tempout")
                     break  # Exit loop if command was successful
                 print("Got 'Sign in to confirm' error. Trying again with another proxy...")
         except FileNotFoundError as e:
@@ -145,12 +144,34 @@ def run_yt_dlp():
 
 
 def execute_yt_dlp_command(proxy_str):
-    """Execute the yt-dlp command with the given proxy."""
-    command = f"yt-dlp --color always --proxy http://{proxy_str} {' '.join([str(arg) for arg in sys.argv])} 2>&1 | tee tempout"
-    subprocess.run(command, shell=True)
-    with open("tempout", "r") as log_fl:
-        log_text = log_fl.read()
-        return "Sign in to" not in log_text and "403" not in log_text
+    """Execute the yt-dlp command with the given proxy using Python API."""
+    try:
+        # Parse command-line arguments (sys.argv already has script name removed by main())
+        # Parse options from command-line arguments
+        parser, opts, args = yt_dlp.parse_options(sys.argv)
+        
+        # Add proxy to options
+        opts['proxy'] = f'http://{proxy_str}'
+        
+        # Create YoutubeDL instance with options
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download(args)
+        
+        return True
+    except yt_dlp.utils.DownloadError as e:
+        error_msg = str(e)
+        # Check for the specific errors we want to retry on
+        if "Sign in to" in error_msg or "403" in error_msg:
+            return False
+        # Re-raise other download errors
+        raise
+    except Exception as e:
+        error_msg = str(e)
+        # Check for the specific errors we want to retry on
+        if "Sign in to" in error_msg or "403" in error_msg:
+            return False
+        # Re-raise other exceptions
+        raise
 
 
 def main():
