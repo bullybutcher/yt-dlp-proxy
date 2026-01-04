@@ -280,12 +280,239 @@ def download_with_proxy(urls, yt_dlp_options=None, proxy=None, proxy_file="proxy
     return False
 
 
-def download_to_telegram(urls, yt_dlp_options=None, proxy=None, proxy_file="proxy.json", max_retries=10, verbose=True, ffmpeg_location=None):
+def get_video_info_with_proxy(url, proxy=None, proxy_file="proxy.json", verbose=True):
+    """Get video information without downloading to estimate file size.
+    
+    Args:
+        url: URL to get info for
+        proxy: Proxy dictionary to use. If None, a random proxy will be selected
+        proxy_file: Name of the proxy file to load proxies from
+        verbose: Whether to print status messages
+        
+    Returns:
+        Dictionary with video info including filesize_approx, or None if failed
+    """
+    try:
+        if proxy is None:
+            proxies = load_proxies(proxy_file)
+            proxy = random.choice(proxies)
+        
+        proxy_str = construct_proxy_string(proxy)
+        opts = {
+            'proxy': f'http://{proxy_str}',
+            'quiet': not verbose,
+            'no_warnings': not verbose,
+        }
+        
+        # Configure JavaScript runtime (deno) if not already set
+        deno_path = shutil.which('deno')
+        if deno_path:
+            opts['js_runtime'] = f'deno:{deno_path}'
+        else:
+            opts['js_runtime'] = 'deno'
+        
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            return info
+    except Exception as e:
+        if verbose:
+            print(f"Error getting video info: {e}")
+        return None
+
+
+def select_appropriate_format(info, max_size_mb=50, verbose=True):
+    """Select an appropriate format based on expected file size.
+    
+    Analyzes available formats to find the best quality that fits within the size limit.
+    Uses actual format information rather than simple heuristics.
+    
+    Args:
+        info: Video info dictionary from yt-dlp (can be None)
+        max_size_mb: Maximum file size in MB (default 50MB for Telegram)
+        verbose: Whether to print status messages
+        
+    Returns:
+        Format string for yt-dlp
+    """
+    # Handle None info
+    if info is None:
+        if verbose:
+            print("No video info available, using safe default format")
+        # Safe default: prefer MP4, avoid MKV, reasonable quality
+        return 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/bestvideo+bestaudio[ext=m4a]/bestvideo+bestaudio/best'
+    
+    max_size_bytes = max_size_mb * 1024 * 1024
+    duration = info.get('duration', 0)
+    formats = info.get('formats', [])
+    
+    # Quick check: if best format fits, use it
+    filesize_approx = info.get('filesize_approx') or info.get('filesize')
+    if filesize_approx and filesize_approx <= max_size_bytes:
+        if verbose:
+            print(f"Best quality fits ({filesize_approx/(1024*1024):.1f}MB <= {max_size_mb}MB), using best quality")
+        # Best quality fits, but still prefer MP4 for mobile compatibility
+        return 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/bestvideo+bestaudio[ext=m4a]/bestvideo+bestaudio/best'
+    
+    if not formats:
+        # No format list available, use fallback selector
+        if verbose:
+            print("No format list available, using fallback selector")
+        return 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480][ext=mp4]+bestaudio/best[ext=mp4]/best'
+    
+    # Analyze available formats to find best quality that fits
+    if verbose:
+        print(f"Analyzing {len(formats)} available formats to find best quality within {max_size_mb}MB limit...")
+    
+    # Separate video-only, audio-only, and combined formats
+    video_formats = []
+    audio_formats = []
+    combined_formats = []
+    
+    for fmt in formats:
+        vcodec = fmt.get('vcodec', 'none')
+        acodec = fmt.get('acodec', 'none')
+        has_video = vcodec != 'none'
+        has_audio = acodec != 'none'
+        
+        # Check if format is MP4-compatible
+        ext = fmt.get('ext', '').lower()
+        container = fmt.get('container', '').lower()
+        is_mp4_compatible = ext in ['mp4', 'm4v'] or container in ['mp4', 'm4v', 'm4a']
+        
+        # Skip formats that aren't MP4-compatible for mobile
+        if not is_mp4_compatible:
+            continue
+        
+        if has_video and has_audio:
+            combined_formats.append(fmt)
+        elif has_video:
+            video_formats.append(fmt)
+        elif has_audio:
+            audio_formats.append(fmt)
+    
+    # Function to estimate file size for a format
+    def estimate_format_size(fmt):
+        """Estimate total file size for a format."""
+        filesize = fmt.get('filesize') or fmt.get('filesize_approx')
+        if filesize:
+            return filesize
+        
+        # Estimate from bitrate and duration
+        tbr = fmt.get('tbr')  # Total bitrate
+        vbr = fmt.get('vbr')  # Video bitrate
+        abr = fmt.get('abr')  # Audio bitrate
+        
+        if tbr and duration:
+            # Total bitrate in kbps * duration in seconds / 8 = bytes
+            return (tbr * 1000 * duration) / 8
+        elif vbr and abr and duration:
+            # Video + audio bitrates
+            return ((vbr + abr) * 1000 * duration) / 8
+        elif vbr and duration:
+            # Video only, estimate audio at 128kbps
+            return ((vbr + 128) * 1000 * duration) / 8
+        elif abr and duration:
+            # Audio only
+            return (abr * 1000 * duration) / 8
+        
+        return None
+    
+    # Function to calculate quality score
+    def quality_score(fmt):
+        """Calculate quality score for a format (higher is better)."""
+        height = fmt.get('height', 0) or 0
+        width = fmt.get('width', 0) or 0
+        fps = fmt.get('fps', 0) or 0
+        tbr = fmt.get('tbr') or fmt.get('vbr') or 0
+        
+        # Score based on resolution, fps, and bitrate
+        return (height * width) + (fps * 100) + (tbr * 10)
+    
+    # Check combined formats first (simpler, no merging needed)
+    suitable_combined = []
+    for fmt in combined_formats:
+        size = estimate_format_size(fmt)
+        if size and size <= max_size_bytes:
+            suitable_combined.append({
+                'format_id': fmt.get('format_id'),
+                'quality_score': quality_score(fmt),
+                'filesize': size,
+                'height': fmt.get('height', 0),
+                'width': fmt.get('width', 0),
+            })
+    
+    if suitable_combined:
+        # Sort by quality (highest first) and pick the best
+        suitable_combined.sort(key=lambda x: x['quality_score'], reverse=True)
+        best = suitable_combined[0]
+        if verbose:
+            print(f"Selected combined format: {best['width']}x{best['height']}, "
+                  f"estimated size: {best['filesize']/(1024*1024):.1f}MB")
+        return best['format_id']
+    
+    # Try video+audio combinations
+    suitable_combinations = []
+    
+    # Sort video formats by quality (highest first)
+    video_formats.sort(key=lambda x: quality_score(x), reverse=True)
+    # Sort audio formats by quality (highest first)
+    audio_formats.sort(key=lambda x: quality_score(x), reverse=True)
+    
+    # Try combinations of video + audio formats
+    for vfmt in video_formats[:10]:  # Limit to top 10 video formats to avoid too many combinations
+        v_size = estimate_format_size(vfmt)
+        if not v_size:
+            continue
+        
+        # Find best audio that fits with this video
+        for afmt in audio_formats[:5]:  # Limit to top 5 audio formats
+            a_size = estimate_format_size(afmt)
+            if not a_size:
+                continue
+            
+            total_size = v_size + a_size
+            if total_size <= max_size_bytes:
+                # Check if both are MP4-compatible
+                v_ext = vfmt.get('ext', '').lower()
+                a_ext = afmt.get('ext', '').lower()
+                v_mp4 = v_ext in ['mp4', 'm4v']
+                a_mp4 = a_ext in ['m4a', 'mp4', 'aac']
+                
+                if v_mp4 and a_mp4:
+                    suitable_combinations.append({
+                        'video_id': vfmt.get('format_id'),
+                        'audio_id': afmt.get('format_id'),
+                        'quality_score': quality_score(vfmt) + (quality_score(afmt) * 0.1),  # Video quality is more important
+                        'filesize': total_size,
+                        'height': vfmt.get('height', 0),
+                        'width': vfmt.get('width', 0),
+                    })
+                    break  # Found best audio for this video, move to next video
+    
+    if suitable_combinations:
+        # Sort by quality and pick the best
+        suitable_combinations.sort(key=lambda x: x['quality_score'], reverse=True)
+        best = suitable_combinations[0]
+        if verbose:
+            print(f"Selected video+audio combination: {best['width']}x{best['height']}, "
+                  f"estimated size: {best['filesize']/(1024*1024):.1f}MB")
+        return f"{best['video_id']}+{best['audio_id']}"
+    
+    # Fallback: use resolution-based selector (will try progressively lower resolutions)
+    if verbose:
+        print("No suitable format found in analysis, using fallback resolution-based selector")
+    return 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720][ext=mp4]+bestaudio/bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480][ext=mp4]+bestaudio/best[ext=mp4]/best'
+
+
+def download_to_telegram(urls, yt_dlp_options=None, proxy=None, proxy_file="proxy.json", max_retries=10, verbose=True, ffmpeg_location=None, max_file_size_mb=50):
     """Download using yt-dlp with a proxy and return file path for Telegram upload.
     
     This function is designed for Telegram bots - it downloads to a temporary file
     and returns the file path and metadata. The file can be sent to Telegram and
     optionally cleaned up afterward.
+    
+    The function automatically selects appropriate quality based on expected file size
+    to stay within Telegram's 50MB limit, and ensures MP4 format for mobile compatibility.
     
     Note: yt-dlp uses ffmpeg as an external binary (not a Python package). 
     ffmpeg must be installed separately on your system.
@@ -298,7 +525,7 @@ def download_to_telegram(urls, yt_dlp_options=None, proxy=None, proxy_file="prox
         max_retries: Maximum number of retries with different proxies on error
         verbose: Whether to print status messages
         ffmpeg_location: Path to ffmpeg executable (optional)
-        cleanup: (Deprecated) This parameter is ignored. Always call cleanup() manually after sending to Telegram.
+        max_file_size_mb: Maximum file size in MB (default 50MB for Telegram)
         
     Returns:
         Dictionary with keys:
@@ -321,14 +548,36 @@ def download_to_telegram(urls, yt_dlp_options=None, proxy=None, proxy_file="prox
     if not url:
         return {'success': False, 'file_path': None, 'title': None, 'ext': None, 'duration': None, 'cleanup': None}
     
-    # Default options optimized for Telegram (best quality, merged, mp4)
+    # Get video info first to estimate file size and select appropriate format
+    if verbose:
+        print("Getting video information...")
+    video_info = get_video_info_with_proxy(url, proxy=proxy, proxy_file=proxy_file, verbose=verbose)
+    
+    # Select appropriate format based on file size
+    # If video_info is None, use a safe default format (MP4, mobile-compatible)
+    if video_info:
+        selected_format = select_appropriate_format(video_info, max_size_mb=max_file_size_mb, verbose=verbose)
+    else:
+        if verbose:
+            print("Could not get video info, using safe default format (MP4, mobile-compatible)")
+        # Safe default: prefer MP4, avoid MKV, reasonable quality
+        selected_format = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/bestvideo+bestaudio[ext=m4a]/bestvideo+bestaudio/best'
+    
+    # Default options optimized for Telegram (mobile-friendly MP4 format)
     if yt_dlp_options is None:
         yt_dlp_options = {
-            'format': 'bestvideo+bestaudio/best',
-            'merge_output_format': 'mp4',
+            'format': selected_format,
+            'merge_output_format': 'mp4',  # Always merge to MP4 for mobile compatibility
             'quiet': not verbose,
             'no_warnings': not verbose,
         }
+    else:
+        # Ensure merge_output_format is always mp4 for mobile compatibility
+        if 'merge_output_format' not in yt_dlp_options:
+            yt_dlp_options['merge_output_format'] = 'mp4'
+        # Override format if not explicitly set to allow size-based selection
+        if 'format' not in yt_dlp_options:
+            yt_dlp_options['format'] = selected_format
     
     # Create temporary directory for download
     temp_dir = tempfile.mkdtemp(prefix='yt_dlp_telegram_')
@@ -420,6 +669,12 @@ def download_to_telegram(urls, yt_dlp_options=None, proxy=None, proxy_file="prox
             title = info_dict.get('title', 'Unknown')
             ext = info_dict.get('ext', os.path.splitext(downloaded_file_path)[1].lstrip('.'))
             duration = info_dict.get('duration')
+            
+            # Ensure file extension is mp4 (for mobile compatibility)
+            # If it's not mp4, we should have used merge_output_format='mp4', but double-check
+            if ext and ext.lower() not in ['mp4', 'm4v']:
+                if verbose:
+                    print(f"Warning: File format is {ext}, expected MP4. This may not play well on mobile.")
             
             # Create cleanup function
             def cleanup_file():

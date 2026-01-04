@@ -116,14 +116,17 @@ async def handle_youtube_download(update: Update, context):
     
     try:
         # Download video to temporary file
+        # Quality is automatically adjusted based on expected file size
+        # Format is automatically set to MP4 for mobile compatibility
         result = download_to_telegram(
             urls=url,
             yt_dlp_options={
-                'format': 'bestvideo+bestaudio/best',
-                'merge_output_format': 'mp4',
+                # Format will be automatically selected based on file size
+                # merge_output_format is automatically set to 'mp4' for mobile compatibility
                 'quiet': True,  # Suppress yt-dlp output
             },
             verbose=False,  # Set to True for debugging
+            max_file_size_mb=50,  # Telegram bot limit
         )
         
         if not result['success']:
@@ -145,7 +148,8 @@ async def handle_youtube_download(update: Update, context):
             text=f"📤 Uploading: {title}"
         )
         
-        # Check file size (Telegram has a 50MB limit for bots)
+        # Final safety check: file size (Telegram has a 50MB limit for bots)
+        # This should rarely trigger since we check before downloading, but keep as safety
         file_size = os.path.getsize(file_path) / (1024 * 1024)  # Size in MB
         
         if file_size > 50:
@@ -153,7 +157,7 @@ async def handle_youtube_download(update: Update, context):
                 chat_id=update.effective_chat.id,
                 message_id=status_msg.message_id,
                 text=f"❌ File too large ({file_size:.1f}MB). Telegram limit is 50MB.\n"
-                     f"Consider downloading audio only or using a different format."
+                     f"Please try a shorter video or use audio-only mode."
             )
             result['cleanup']()  # Clean up the file
             return
